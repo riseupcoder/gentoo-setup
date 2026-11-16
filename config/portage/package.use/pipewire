@@ -1,0 +1,1 @@
+media-video/pipewire sound-server -system-service -elogind -systemd

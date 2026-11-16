@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -eu
+
+install -d -m 0755 -o root -g root /run/user
+
+awk -F: '$3 >= 1000 && $3 < 65534 {print $3 ":" $4}' /etc/passwd |
+while IFS=: read -r uid gid; do
+    install -d -m 0700 -o "$uid" -g "$gid" "/run/user/$uid"
+done
