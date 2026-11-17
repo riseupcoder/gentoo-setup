@@ -113,58 +113,51 @@ setup_foot() {
     success "Foot terminal installed."
 }
 
-install_font() {
-    local font_dir="$HOME/.local/share/fonts"
-    local url digest
+setup_mesa() {
+    info "Installing Mesa driver..."
 
-    info "Installing Google Sans Code..."
+    require_file "$PACKAGE_USE_DIR/mesa"
+    require_file "$PACKAGE_USE_DIR/llvm"
+    require_file "$PACKAGE_USE_DIR/00video"
+    require_file "$CONFIG_DIR/portage/package.accept_keywords/mesa"
 
-    install_packages app-arch/unzip
+    doas install -D -m 0644 \
+        "$PACKAGE_USE_DIR/mesa" \
+        /etc/portage/package.use/mesa
 
-    create_temp_directory
+    doas install -D -m 0644 \
+        "$PACKAGE_USE_DIR/llvm" \
+        /etc/portage/package.use/llvm
 
-    read -r url digest < <(
-        curl -fsSL --retry 3 \
-            https://api.github.com/repos/googlefonts/googlesans-code/releases/latest |
-            jq -er '
-                .assets[]
-                | select(.name | test("^GoogleSansCode-v[0-9.]+\\.zip$"))
-                | [.browser_download_url, .digest]
-                | @tsv
-            '
-    )
+    doas install -D -m 0644 \
+        "$PACKAGE_USE_DIR/00video" \
+        /etc/portage/package.use/00video
 
-    curl -fsSL --retry 3 -o "$TEMP_DIR/font.zip" "$url"
+    doas install -D -m 0644 \
+        "$CONFIG_DIR/portage/package.accept_keywords/mesa" \
+        /etc/portage/package.accept_keywords/mesa
 
-    printf '%s  %s\n' "${digest#sha256:}" "$TEMP_DIR/font.zip" |
-        sha256sum -c -
+    install_packages media-libs/mesa
 
-    unzip -jo "$TEMP_DIR/font.zip" '*.ttf' -d "$TEMP_DIR" >/dev/null
-
-    install -Dm400 \
-        "$TEMP_DIR/GoogleSansCode[MONO,wght].ttf" \
-        "$font_dir/google_sans_code.ttf"
-
-    fc-cache -f "$font_dir"
-
-    remove_temp_directory
-
-    remove_packages app-arch/unzip
-
-    success "Google Sans Code installed."
-}
+    success "Mesa installed with Vulkan, VA-API, and Wayland support."
+} 
 
 setup_desktop() {
+
+    # wayland
     setup_seatd
     setup_wlroots
     setup_dwl
+    setup_foot
 
+    # audio 
     setup_pipewire
 
+    # container
     setup_podman
 
-    setup_foot
-    install_font
+    # gpu
+    setup_mesa
 
     echo
     success "Wayland desktop configuration complete."

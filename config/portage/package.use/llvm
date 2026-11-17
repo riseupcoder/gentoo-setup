@@ -1,0 +1,2 @@
+llvm-core/llvm LLVM_TARGETS: -* X86 AMDGPU ABI_X86: -* 64
+llvm-core/clang LLVM_TARGETS: -* X86 AMDGPU ABI_X86: -* 64
