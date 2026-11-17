@@ -13,6 +13,9 @@ install_session_script() {
         "$source" \
         /etc/local.d/create-session.start
 
+    grep -q 'XDG_RUNTIME_DIR' ~/.bash_profile 2>/dev/null || \
+        echo 'export XDG_RUNTIME_DIR=/run/user/$(id -u)' >> ~/.bash_profile
+
     success "Session startup script installed."
 }
 
