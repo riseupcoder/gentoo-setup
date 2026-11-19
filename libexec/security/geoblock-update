@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly COUNTRIES=(ru cn kp pk ir iq tr vn ng)
+readonly GEO_BLOCKLIST_URL="https://raw.githubusercontent.com/ipverse/geo-ip-blocks/master/country"
+
+readonly MAX_FILE_SIZE=10485760
+readonly MAX_TOTAL_PREFIXES=500000
+
+TEMP_DIR=""
+
+info() {
+    printf '[INFO] %s\n' "$*"
+}
+
+error() {
+    printf '[ERROR] %s\n' "$*" >&2
+}
+
+cleanup() {
+    [[ -z "$TEMP_DIR" ]] || rm -rf -- "$TEMP_DIR"
+}
+
+download_country_lists() {
+    info "Downloading GeoBlock country lists"
+
+    local country family file url status size
+
+    for country in "${COUNTRIES[@]}"; do
+        for family in ipv4 ipv6; do
+            file="$TEMP_DIR/$country.$family"
+            url="$GEO_BLOCKLIST_URL/$country/$country-$family.txt"
+
+            if ! status=$(curl \
+                --silent --show-error --location \
+                --proto '=https' --proto-redir '=https' \
+                --retry 2 --retry-delay 2 \
+                --connect-timeout 10 --max-time 60 \
+                --max-filesize "$MAX_FILE_SIZE" \
+                --output "$file" \
+                --write-out '%{http_code}' \
+                "$url"); then
+
+                error "Download failed: $country ($family)"
+                return 1
+            fi
+
+            # Some countries do not have IPv6 feeds.
+            if [[ "$family" == ipv6 && "$status" == 404 ]]; then
+                : > "$file"
+                continue
+            fi
+
+            if [[ "$status" != 200 || ! -s "$file" ]]; then
+                error "Invalid feed: $country ($family), HTTP $status"
+                return 1
+            fi
+
+            size=$(wc -c < "$file")
+
+            if (( size > MAX_FILE_SIZE )); then
+                error "Feed exceeds size limit: $country ($family)"
+                return 1
+            fi
+        done
+    done
+
+    info "Country lists downloaded"
+}
+
+normalize_feeds() {
+    local family="$1"
+
+    if ! LC_ALL=C awk \
+        -v family="$family" \
+        -v limit="$MAX_TOTAL_PREFIXES" '
+
+        {
+            sub(/\r$/, "")
+            sub(/^[[:space:]]+/, "")
+            sub(/[[:space:]]+$/, "")
+        }
+
+        /^$/ || /^#/ {
+            next
+        }
+
+        {
+            if (split($0, cidr, "/") != 2 ||
+                cidr[2] !~ /^[0-9]+$/) {
+                invalid = 1
+                next
+            }
+
+            if (family == "ipv4") {
+                if ($0 !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/ ||
+                    cidr[2] + 0 > 32) {
+                    invalid = 1
+                    next
+                }
+
+                if (split(cidr[1], octets, /\./) != 4) {
+                    invalid = 1
+                    next
+                }
+
+                for (i = 1; i <= 4; i++) {
+                    if (octets[i] + 0 > 255) {
+                        invalid = 1
+                        next
+                    }
+                }
+
+            } else {
+                if ($0 !~ /^[[:xdigit:].:]+\/[0-9]+$/ ||
+                    cidr[2] + 0 > 128) {
+                    invalid = 1
+                    next
+                }
+            }
+
+            if (++count > limit) {
+                invalid = 1
+                next
+            }
+
+            print
+        }
+
+        END {
+            if (invalid || (family == "ipv4" && count == 0))
+                exit 1
+        }
+
+    ' "$TEMP_DIR"/*."$family" |
+        LC_ALL=C sort -u > "$TEMP_DIR/$family"; then
+
+        error "Invalid or excessive $family feed data"
+        return 1
+    fi
+}
+
+generate_geoblock_ruleset() {
+    info "Generating GeoBlock set transaction"
+
+    normalize_feeds ipv4
+    normalize_feeds ipv6
+
+    local ipv4_count ipv6_count
+
+    ipv4_count=$(wc -l < "$TEMP_DIR/ipv4")
+    ipv6_count=$(wc -l < "$TEMP_DIR/ipv6")
+
+    if (( ipv4_count + ipv6_count > MAX_TOTAL_PREFIXES )); then
+        error "Total prefix count exceeds limit"
+        return 1
+    fi
+
+    info "IPv4 prefixes: $ipv4_count"
+    info "IPv6 prefixes: $ipv6_count"
+
+    {
+        printf 'flush set inet geoblock block4\n'
+        printf 'flush set inet geoblock block6\n'
+
+        if [[ -s "$TEMP_DIR/ipv4" ]]; then
+            printf 'add element inet geoblock block4 {\n'
+
+            awk '
+                NR > 1 { printf ",\n" }
+                { printf "    %s", $0 }
+                END { print "" }
+            ' "$TEMP_DIR/ipv4"
+
+            printf '}\n'
+        fi
+
+        if [[ -s "$TEMP_DIR/ipv6" ]]; then
+            printf 'add element inet geoblock block6 {\n'
+
+            awk '
+                NR > 1 { printf ",\n" }
+                { printf "    %s", $0 }
+                END { print "" }
+            ' "$TEMP_DIR/ipv6"
+
+            printf '}\n'
+        fi
+
+    } > "$TEMP_DIR/geoblock.nft"
+
+    info "GeoBlock transaction generated"
+}
+
+install_geoblock_ruleset() {
+    info "Validating and applying GeoBlock sets"
+
+    # Ensure the permanent policy has already been loaded.
+    if ! nft list set inet geoblock block4 >/dev/null 2>&1 ||
+       ! nft list set inet geoblock block6 >/dev/null 2>&1; then
+
+        error "GeoBlock table or sets are not loaded"
+        return 1
+    fi
+
+    # Validate without modifying the running firewall.
+    if ! nft -c -f "$TEMP_DIR/geoblock.nft"; then
+        error "GeoBlock transaction validation failed"
+        return 1
+    fi
+
+    # Flush and repopulate both sets in one atomic transaction.
+    if ! nft -f "$TEMP_DIR/geoblock.nft"; then
+        error "Failed to apply GeoBlock transaction"
+        return 1
+    fi
+
+    # Persist the complete active ruleset through OpenRC.
+    if ! rc-service nftables save; then
+        error "GeoBlock applied, but nftables persistence failed"
+        return 1
+    fi
+
+    info "GeoBlock sets updated and persisted"
+}
+
+main() {
+    if (( EUID != 0 )); then
+        error "This updater must run as root"
+        exit 1
+    fi
+
+    local cmd
+
+    for cmd in curl awk sort wc nft mktemp rc-service; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            error "Required command not found: $cmd"
+            exit 1
+        fi
+    done
+
+    TEMP_DIR=$(mktemp -d)
+    trap cleanup EXIT
+
+    info "Starting GeoBlock update"
+
+    download_country_lists
+    generate_geoblock_ruleset
+    install_geoblock_ruleset
+
+    info "GeoBlock update completed"
+}
+
+main "$@"

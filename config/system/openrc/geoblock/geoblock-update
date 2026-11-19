@@ -1,0 +1,35 @@
+#!/sbin/openrc-run
+
+description="Update GeoBlock rules daily"
+
+command="/usr/local/libexec/geoblock-update"
+
+depend() {
+    need net
+}
+
+start() {
+    local stamp="/var/lib/geoblock-update.last"
+    local today
+
+    today=$(date +%F)
+
+    if [[ -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$today" ]]; then
+        einfo "GeoBlock already updated today"
+        return 0
+    fi
+
+    ebegin "Updating GeoBlock rules"
+
+    if "$command"; then
+        printf '%s\n' "$today" > "$stamp" || {
+            eend 1 "Failed to save update date"
+            return 1
+        }
+
+        eend 0
+    else
+        eend 1 "GeoBlock update failed"
+        return 1
+    fi
+}

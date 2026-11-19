@@ -2,6 +2,7 @@
 
 readonly CONFIG_DIR="$ROOT_DIR/config"
 readonly SCRIPTS_DIR="$ROOT_DIR/scripts"
+readonly LIBEXEC_DIR="$ROOT_DIR/libexec"
 
 create_temp_directory() {
     mktemp -d
@@ -26,7 +27,7 @@ require_programs() {
 }
 
 install_packages() {
-    doas emerge --verbose "$@"
+    doas emerge --verbose --noreplace "$@"
 }
 
 remove_packages() {

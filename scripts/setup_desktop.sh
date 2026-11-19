@@ -73,11 +73,15 @@ setup_pipewire() {
         "$PACKAGE_USE_DIR/wireplumber" \
         /etc/portage/package.use/wireplumber
 
-    install_packages media-video/pipewire media-video/wireplumber
+    install_packages media-video/pipewire media-video/wireplumber sys-apps/dbus
 
+    doas rc-update add dbus default
     rc-update add -U pipewire default
     rc-update add -U pipewire-pulse default
     rc-update add -U wireplumber default
+
+    # add Current user to audio group
+    doas usermod -aG audio "$(id -un)"
 
     success "PipeWire and WirePlumber installed and configured."
 }
@@ -144,7 +148,7 @@ setup_mesa() {
 
 setup_desktop() {
 
-    # wayland
+#   wayland
     setup_seatd
     setup_wlroots
     setup_dwl

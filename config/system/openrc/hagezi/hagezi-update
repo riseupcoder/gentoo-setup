@@ -1,0 +1,36 @@
+#!/sbin/openrc-run
+
+description="Update HaGeZi DNS blocklists daily"
+
+command="/usr/local/libexec/hagezi-update"
+
+depend() {
+    need net
+}
+
+start() {
+    local stamp="/var/lib/hagezi-update.last"
+    local today
+
+    today=$(date +%F)
+
+    if [[ -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$today" ]]; then
+        einfo "HaGeZi blocklists already updated today"
+        return 0
+    fi
+
+    ebegin "Updating HaGeZi blocklists"
+
+    if "$command"; then
+        printf '%s\n' "$today" > "$stamp" || {
+            eend 1 "Failed to save update date"
+            return 1
+        }
+
+        eend 0
+    else
+        eend 1 "HaGeZi update failed"
+        return 1
+    fi
+}
+
